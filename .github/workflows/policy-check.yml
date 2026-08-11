@@ -1,0 +1,149 @@
+name: IaC policy checks
+
+# A guardrail nobody has tested is indistinguishable from no guardrail, and the
+# failure is silent. So this pipeline runs every check twice:
+#
+#   compliant/   MUST pass  - catches policies that are impossible to satisfy
+#   violations/  MUST fail  - catches policies that no longer detect anything
+#
+# The second direction is the one teams forget, and it is how a scanner quietly
+# stops protecting you after a version bump.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write # upload SARIF to the Security tab
+
+env:
+  CONFTEST_VERSION: "0.56.0"
+
+jobs:
+  terraform:
+    name: Terraform fmt and validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff terraform/
+
+      - name: terraform validate (both fixtures)
+        run: |
+          # Both directories must be VALID Terraform. That is the point: the
+          # insecure fixture is not broken code, it is working code that would
+          # deploy a dangerous stack. Only policy tells them apart.
+          for d in terraform/compliant terraform/violations; do
+            echo "::group::$d"
+            terraform -chdir="$d" init -backend=false -input=false
+            terraform -chdir="$d" validate
+            echo "::endgroup::"
+          done
+
+  checkov:
+    name: Checkov
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install checkov==3.3.10
+
+      - name: Compliant fixture must be clean
+        run: |
+          # Uses .checkov.yaml, where every skip carries a written justification.
+          checkov --config-file .checkov.yaml --compact
+          echo "Compliant fixture passed with zero findings."
+
+      - name: Insecure fixture MUST be caught
+        run: |
+          set +e
+          checkov -d terraform/violations --framework terraform --compact --quiet > /tmp/out.txt 2>&1
+          rc=$?
+          set -e
+          cat /tmp/out.txt | tail -40
+          failed=$(grep -oE 'Failed checks: [0-9]+' /tmp/out.txt | grep -oE '[0-9]+' | head -1)
+          echo "Checkov reported ${failed:-0} failures, exit code $rc"
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::Checkov PASSED the deliberately insecure fixture. The scanner is not working."
+            exit 1
+          fi
+          if [ "${failed:-0}" -lt 15 ]; then
+            echo "::error::Expected at least 15 findings, got ${failed:-0}. Detection has regressed."
+            exit 1
+          fi
+          echo "Guardrail confirmed working: insecure fixture rejected."
+
+      - name: Produce SARIF for the Security tab
+        if: always()
+        run: checkov -d terraform/violations --framework terraform -o sarif --output-file-path . || true
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+          category: checkov
+
+  conftest:
+    name: Custom Rego policies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install conftest
+        run: |
+          curl -sSL "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" \
+            | tar -xz -C /usr/local/bin conftest
+          conftest --version
+
+      - name: Compliant fixture must satisfy every custom policy
+        run: |
+          conftest test --parser hcl2 --policy policies terraform/compliant
+          echo "All custom policies satisfied."
+
+      - name: Insecure fixture MUST trip the custom policies
+        run: |
+          set +e
+          conftest test --parser hcl2 --policy policies terraform/violations > /tmp/c.txt 2>&1
+          rc=$?
+          set -e
+          cat /tmp/c.txt
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::Custom policies PASSED the insecure fixture. They detect nothing."
+            exit 1
+          fi
+          # Assert each policy family actually fired. A single catch-all failure
+          # could hide four dead policies.
+          fail=0
+          for family in "DATA RESIDENCY" "TAGGING" "NETWORK EXPOSURE" "IAM" "ENCRYPTION" "EXPOSURE" "RESILIENCE"; do
+            if grep -q "$family" /tmp/c.txt; then
+              echo "  fired: $family"
+            else
+              echo "::error::policy family '$family' did not fire - it may be dead code"; fail=1
+            fi
+          done
+          exit $fail
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### IaC policy checks"
+            echo ""
+            echo "| Direction | Fixture | Expected | "
+            echo "|---|---|---|"
+            echo "| Positive | \`terraform/compliant\` | passes every check |"
+            echo "| Negative | \`terraform/violations\` | rejected by every policy family |"
+            echo ""
+            echo "Both fixtures are valid Terraform. Only policy separates them."
+          } >> "$GITHUB_STEP_SUMMARY"

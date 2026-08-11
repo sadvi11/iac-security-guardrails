@@ -1,0 +1,27 @@
+# Checkov configuration.
+#
+# Every skip below is a deliberate decision with a stated reason. A scanner
+# tuned by deleting findings is worse than no scanner, because it looks clean.
+# If a reason stops being true, delete the line and fix the finding.
+
+directory:
+  - terraform/compliant
+
+framework:
+  - terraform
+
+# Fail the build on any finding that is not explicitly skipped.
+soft-fail: false
+
+skip-check:
+  # This repository is a policy fixture, not a deployed stack. The security
+  # group exists to be scanned; there is no EC2 instance to attach it to.
+  - CKV2_AWS_5
+
+  # Cross-region replication triples storage cost and is not warranted for
+  # data classified "internal". Revisit if DataClass becomes "restricted".
+  - CKV_AWS_144
+
+  # Event notifications are a workload concern, not a security control. No
+  # consumer exists for these buckets.
+  - CKV2_AWS_62

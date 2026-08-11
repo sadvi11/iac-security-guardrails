@@ -1,0 +1,23 @@
+# Credentials — never commit
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.tfvars
+!example.tfvars
+*.json
+
+# Terraform state contains resource detail and sometimes secrets
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+
+# Local tooling
+.venv-tools/
+.venv/
+__pycache__/
+results.sarif
+.DS_Store
