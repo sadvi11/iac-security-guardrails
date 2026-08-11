@@ -1,14 +1,15 @@
 # Mandatory tagging.
 #
-# Untagged resources are the root cause of every "whose is this and can we
-# delete it?" thread, and they make chargeback impossible. Enforcing tags in CI
-# is far cheaper than reconciling a bill afterwards.
+# Untagged resources cause the "whose is this and can we delete it?" thread,
+# and make chargeback impossible. Enforcing in CI is far cheaper than
+# reconciling a bill afterwards.
+#
+# Plan-based, so tags composed from locals or merge() are seen as their final
+# resolved value rather than an unreadable expression.
 package main
 
 required_tags := {"Environment", "Owner", "CostCenter"}
 
-# Resource types that support tags and are worth governing. Deliberately a
-# denylist of untaggable types would be fragile, so this is an allowlist.
 taggable_types := {
 	"aws_s3_bucket",
 	"aws_security_group",
@@ -20,20 +21,31 @@ taggable_types := {
 	"aws_ecs_service",
 }
 
+resources[r] {
+	r := input.planned_values.root_module.resources[_]
+}
+
+# A resource with no tags block appears in the plan as "tags": null, NOT as an
+# absent key. `not r.values.tags` therefore does not match, because null is a
+# defined value in Rego. object.get with a null default covers both shapes.
+#
+# This exact bug made the rule silently dead: it matched nothing while the
+# build stayed green. The negative fixture is what surfaced it, which is the
+# whole argument for testing policies in both directions.
 deny[msg] {
-	taggable_types[type]
-	resource := input.resource[type][name]
-	not resource.tags
-	msg := sprintf("TAGGING: %s.%s has no tags block. Required: %v",
-		[type, name, concat(", ", sort([t | required_tags[t]]))])
+	r := resources[_]
+	taggable_types[r.type]
+	is_null(object.get(r.values, "tags", null))
+	msg := sprintf("TAGGING: %s has no tags. Required: %s",
+		[r.address, concat(", ", sort([t | required_tags[t]]))])
 }
 
 deny[msg] {
-	taggable_types[type]
-	resource := input.resource[type][name]
-	tags := resource.tags
+	r := resources[_]
+	taggable_types[r.type]
+	tags := r.values.tags
 	is_object(tags)
 	required_tags[required]
 	not tags[required]
-	msg := sprintf("TAGGING: %s.%s is missing required tag %q", [type, name, required])
+	msg := sprintf("TAGGING: %s is missing required tag %q", [r.address, required])
 }

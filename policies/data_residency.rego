@@ -1,9 +1,12 @@
 # Canadian data residency.
 #
 # Banks, insurers and government in Canada frequently contract that personal
-# data stays in-country. This is the policy most likely to be organisation-
-# specific rather than shipped by a scanner -- Checkov has no idea where your
-# data is legally allowed to live.
+# data stays in-country. No scanner ships this rule -- Checkov cannot know
+# where your data is legally allowed to live.
+#
+# Evaluated against a Terraform PLAN, not raw HCL. Static HCL parsing sees
+# "${var.region}" and cannot tell you whether that resolves to ca-central-1 or
+# us-east-1, which makes it useless for exactly this check.
 package main
 
 allowed_regions := {
@@ -13,24 +16,24 @@ allowed_regions := {
 	"canadaeast",    # Azure
 }
 
-deny[msg] {
-	region := input.provider.aws.region
-	is_string(region)
-	not allowed_regions[region]
-	msg := sprintf(
-		"DATA RESIDENCY: provider region %q is outside Canada. Allowed: %v",
-		[region, concat(", ", sort([r | allowed_regions[r]]))],
-	)
+# A literal region on the provider.
+provider_region := r {
+	r := input.configuration.provider_config.aws.expressions.region.constant_value
 }
 
-# Catch a region pinned directly on a resource, which bypasses the provider.
+# A region supplied by a variable -- resolved from the plan's variable values.
+provider_region := r {
+	ref := input.configuration.provider_config.aws.expressions.region.references[_]
+	startswith(ref, "var.")
+	name := substring(ref, 4, -1)
+	r := input.variables[name].value
+}
+
 deny[msg] {
-	resource := input.resource[type][name]
-	region := resource.region
-	is_string(region)
+	region := provider_region
 	not allowed_regions[region]
 	msg := sprintf(
-		"DATA RESIDENCY: %s.%s pins region %q, outside Canada",
-		[type, name, region],
+		"DATA RESIDENCY: provider region %q is outside Canada. Allowed: %s",
+		[region, concat(", ", sort([r | allowed_regions[r]]))],
 	)
 }

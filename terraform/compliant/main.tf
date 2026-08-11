@@ -14,6 +14,13 @@ terraform {
 
 provider "aws" {
   region = var.region
+
+  # These let `terraform plan` run in CI with no real credentials, so policy
+  # evaluation never needs cloud access. They affect planning only, not what
+  # gets created.
+  skip_credentials_validation = true
+  skip_requesting_account_id  = true
+  skip_metadata_api_check     = true
 }
 
 locals {

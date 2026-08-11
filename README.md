@@ -45,6 +45,26 @@ The range check matters: a rule opening `0-65535` exposes SSH just as surely as
 one naming port 22, and a policy that only string-matches the port number misses
 it entirely.
 
+### Why these run against a plan, not raw HCL
+
+The first version parsed `.tf` files directly and immediately failed on its own
+compliant fixture:
+
+```
+DATA RESIDENCY: provider region "${var.region}" is outside Canada
+```
+
+Static HCL parsing cannot resolve a variable. It sees the literal string
+`${var.region}` and has no idea whether that becomes `ca-central-1` or
+`us-east-1` — which makes it useless for precisely the check being made. Tags
+composed from `locals` or `merge()` have the same problem.
+
+So the pipeline runs `terraform plan` and evaluates the resulting JSON, where
+every variable, local and interpolation is already resolved. The provider blocks
+set `skip_credentials_validation`, so **planning needs no real AWS account** —
+policy evaluation never touches a cloud API and there is no credential in CI to
+leak.
+
 ## The interesting part: tuning is the actual skill
 
 Running a scanner is one command. **Deciding which findings to enforce is the
@@ -69,9 +89,13 @@ clean. Every skip here states why, and what would change our mind.
 | Checkov | **0 findings** | **≥ 15 findings**, non-zero exit |
 | Custom Rego policies | all satisfied | **every policy family must fire** |
 
-That last cell is deliberate: the build asserts each of the seven policy
-families appears in the output. A single catch-all failure could otherwise hide
-four dead policies.
+That last cell is deliberate, and it has already paid for itself. The build
+asserts each of the seven policy families appears in the output — and that check
+caught a **dead policy**: the tagging rule matched nothing, because a resource
+with no tags appears in a plan as `"tags": null` rather than an absent key, and
+`not r.values.tags` does not match a defined null. Three untagged resources
+sailed through while the suite reported success. Without the negative fixture
+and the per-family assertion, that policy would have shipped looking healthy.
 
 Findings are uploaded as SARIF, so they appear in the repository's **Security**
 tab rather than only in build logs.
@@ -86,9 +110,9 @@ make violations  # scan the bad fixture and see what gets caught
 make fmt         # terraform fmt -recursive
 ```
 
-Costs nothing — no cloud credentials are needed anywhere. The Rego policies
-parse HCL directly, so there is no `terraform plan` and therefore no AWS
-account, no state file, and nothing to leak.
+Costs nothing. `terraform plan` runs with dummy credentials and
+`skip_credentials_validation`, so no AWS account, no state file, and no
+credential is involved anywhere.
 
 ## Repository layout
 
@@ -107,7 +131,10 @@ account, no state file, and nothing to leak.
 
 ```bash
 checkov -d path/to/your/terraform --config-file .checkov.yaml
-conftest test --parser hcl2 --policy policies path/to/your/terraform
+
+terraform -chdir=path/to/your/terraform plan -out=tf.plan
+terraform -chdir=path/to/your/terraform show -json tf.plan > plan.json
+conftest test --policy policies plan.json
 ```
 
 The policies are not specific to the fixtures — point them at any Terraform.

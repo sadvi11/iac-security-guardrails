@@ -18,6 +18,13 @@ terraform {
 # V1 - data residency: us-east-1 puts Canadian data outside the country.
 provider "aws" {
   region = "us-east-1"
+
+  # These let `terraform plan` run in CI with no real credentials, so policy
+  # evaluation never needs cloud access. They affect planning only, not what
+  # gets created.
+  skip_credentials_validation = true
+  skip_requesting_account_id  = true
+  skip_metadata_api_check     = true
 }
 
 # V2 - unencrypted, unversioned, public-ACL bucket with no required tags.

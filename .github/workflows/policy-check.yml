@@ -54,7 +54,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
 
       - run: pip install checkov==3.3.10
 
@@ -88,7 +87,7 @@ jobs:
         run: checkov -d terraform/violations --framework terraform -o sarif --output-file-path . || true
 
       - name: Upload SARIF
-        if: always()
+        if: always() && hashFiles('results.sarif') != ''
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results.sarif
@@ -100,21 +99,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
       - name: Install conftest
         run: |
           curl -sSL "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" \
             | tar -xz -C /usr/local/bin conftest
           conftest --version
 
+      - name: Generate plan JSON for both fixtures
+        env:
+          # Dummy values. The provider blocks set skip_credentials_validation,
+          # so planning needs no real account -- policy evaluation never
+          # touches a cloud API and there is no credential to leak.
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+        run: |
+          for d in compliant violations; do
+            terraform -chdir="terraform/$d" init -backend=false -input=false >/dev/null
+            terraform -chdir="terraform/$d" plan -input=false -refresh=false -out=tf.plan >/dev/null
+            terraform -chdir="terraform/$d" show -json tf.plan > "/tmp/$d.json"
+            echo "planned $d: $(python3 -c "import json;print(len(json.load(open('/tmp/$d.json'))['planned_values']['root_module']['resources']))") resources"
+          done
+
       - name: Compliant fixture must satisfy every custom policy
         run: |
-          conftest test --parser hcl2 --policy policies terraform/compliant
+          conftest test --policy policies /tmp/compliant.json
           echo "All custom policies satisfied."
 
       - name: Insecure fixture MUST trip the custom policies
         run: |
           set +e
-          conftest test --parser hcl2 --policy policies terraform/violations > /tmp/c.txt 2>&1
+          conftest test --policy policies /tmp/violations.json > /tmp/c.txt 2>&1
           rc=$?
           set -e
           cat /tmp/c.txt

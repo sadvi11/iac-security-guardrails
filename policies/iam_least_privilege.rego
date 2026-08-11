@@ -1,40 +1,41 @@
 # No wildcard IAM.
 #
 # Action "*" on Resource "*" is administrator access by another name. It is
-# usually written as a temporary unblock and then never narrowed.
+# usually written as a temporary unblock and then never narrowed. This parses
+# the embedded JSON policy document rather than pattern-matching the HCL.
 package main
 
-deny[msg] {
-	policy := input.resource.aws_iam_policy[name]
-	doc := json.unmarshal(policy.policy)
-	statement := doc.Statement[_]
-	statement.Effect == "Allow"
-	wildcard_action(statement.Action)
-	msg := sprintf("IAM: aws_iam_policy.%s allows action \"*\" - grant only the actions actually used", [name])
+resources[r] {
+	r := input.planned_values.root_module.resources[_]
+}
+
+statements[[r, s]] {
+	r := resources[_]
+	r.type == "aws_iam_policy"
+	doc := json.unmarshal(r.values.policy)
+	s := doc.Statement[_]
+	s.Effect == "Allow"
 }
 
 deny[msg] {
-	policy := input.resource.aws_iam_policy[name]
-	doc := json.unmarshal(policy.policy)
-	statement := doc.Statement[_]
-	statement.Effect == "Allow"
-	wildcard_resource(statement.Resource)
-	wildcard_action(statement.Action)
-	msg := sprintf("IAM: aws_iam_policy.%s allows \"*\" on \"*\" - this is admin access", [name])
+	[r, s] := statements[_]
+	wildcard(s.Action)
+	wildcard(s.Resource)
+	msg := sprintf("IAM: %s allows \"*\" on \"*\" - this is administrator access", [r.address])
 }
 
-wildcard_action(action) {
-	action == "*"
+deny[msg] {
+	[r, s] := statements[_]
+	wildcard(s.Action)
+	not wildcard(s.Resource)
+	msg := sprintf("IAM: %s allows action \"*\" - grant only the actions actually used", [r.address])
 }
 
-wildcard_action(action) {
-	action[_] == "*"
+wildcard(v) {
+	v == "*"
 }
 
-wildcard_resource(resource) {
-	resource == "*"
-}
-
-wildcard_resource(resource) {
-	resource[_] == "*"
+wildcard(v) {
+	is_array(v)
+	v[_] == "*"
 }

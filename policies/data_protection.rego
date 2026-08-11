@@ -1,26 +1,34 @@
-# Encryption at rest, backups, and no publicly reachable databases.
+# Encryption at rest, backups, and nothing publicly reachable.
 package main
 
-deny[msg] {
-	db := input.resource.aws_db_instance[name]
-	db.storage_encrypted == false
-	msg := sprintf("ENCRYPTION: aws_db_instance.%s has storage_encrypted = false", [name])
+resources[r] {
+	r := input.planned_values.root_module.resources[_]
 }
 
 deny[msg] {
-	db := input.resource.aws_db_instance[name]
-	db.publicly_accessible == true
-	msg := sprintf("EXPOSURE: aws_db_instance.%s is publicly_accessible - put it in a private subnet", [name])
+	r := resources[_]
+	r.type == "aws_db_instance"
+	r.values.storage_encrypted == false
+	msg := sprintf("ENCRYPTION: %s has storage_encrypted = false", [r.address])
 }
 
 deny[msg] {
-	db := input.resource.aws_db_instance[name]
-	db.backup_retention_period == 0
-	msg := sprintf("RESILIENCE: aws_db_instance.%s has backups disabled (retention 0)", [name])
+	r := resources[_]
+	r.type == "aws_db_instance"
+	r.values.publicly_accessible == true
+	msg := sprintf("EXPOSURE: %s is publicly accessible - move it to a private subnet", [r.address])
 }
 
 deny[msg] {
-	acl := input.resource.aws_s3_bucket_acl[name]
-	startswith(acl.acl, "public")
-	msg := sprintf("EXPOSURE: aws_s3_bucket_acl.%s sets a public ACL (%s)", [name, acl.acl])
+	r := resources[_]
+	r.type == "aws_db_instance"
+	r.values.backup_retention_period == 0
+	msg := sprintf("RESILIENCE: %s has backups disabled (retention 0)", [r.address])
+}
+
+deny[msg] {
+	r := resources[_]
+	r.type == "aws_s3_bucket_acl"
+	startswith(r.values.acl, "public")
+	msg := sprintf("EXPOSURE: %s sets a public ACL (%s)", [r.address, r.values.acl])
 }
