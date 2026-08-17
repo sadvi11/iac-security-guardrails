@@ -15,6 +15,50 @@ pass, and a deliberately insecure one **must be rejected**. That second
 direction is the one teams skip, and it is exactly how a scanner quietly stops
 detecting anything after a version bump — with a green badge the whole time.
 
+## What it actually catches
+
+Real output from the [latest CI run](https://github.com/sadvi11/iac-security-guardrails/actions),
+run against two fixtures - one secure, one deliberately insecure:
+
+```console
+$ conftest test --policy policies /tmp/compliant.json
+12 tests, 12 passed, 0 warnings, 0 failures, 0 exceptions
+All custom policies satisfied.
+
+$ conftest test --policy policies /tmp/violations.json
+FAIL - DATA RESIDENCY: provider region "us-east-1" is outside Canada.
+       Allowed: ca-central-1, ca-west-1, canadacentral, canadaeast
+FAIL - ENCRYPTION: aws_db_instance.exposed has storage_encrypted = false
+FAIL - EXPOSURE: aws_db_instance.exposed is publicly accessible
+       - move it to a private subnet
+FAIL - EXPOSURE: aws_s3_bucket_acl.leaky sets a public ACL (public-read)
+12 tests, 0 passed, 0 warnings, 12 failures, 0 exceptions
+```
+
+**Guardrails are tested in both directions**, and every policy family must fire
+individually:
+
+```console
+  fired: DATA RESIDENCY
+  fired: TAGGING
+  fired: NETWORK EXPOSURE
+  fired: IAM
+  fired: ENCRYPTION
+  fired: EXPOSURE
+  fired: RESILIENCE
+```
+
+**That per-family assertion exists because of a real bug.** One policy had
+silently stopped matching anything while the suite stayed green - the untagged
+check was written as `not r.values.tags`, but Terraform plan JSON emits
+`"tags": null`, and in Rego `null` is a defined value, so the rule was
+permanently false. It hid because the test only asserted that the insecure
+fixture produced *some* violations, and it did - from the other four rules.
+
+A policy that never fires and a policy that fires on everything both look like
+success from one side.
+
+
 ## Both fixtures are valid Terraform
 
 ```
