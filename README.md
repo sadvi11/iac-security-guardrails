@@ -144,6 +144,35 @@ and the per-family assertion, that policy would have shipped looking healthy.
 Findings are uploaded as SARIF, so they appear in the repository's **Security**
 tab rather than only in build logs.
 
+## Design decisions
+
+Recorded as short ADRs in [`docs/adr/`](docs/adr/):
+
+- [001 - Evaluate the Terraform plan JSON, not raw HCL](docs/adr/001-evaluate-terraform-plan-json.md)
+- [002 - Checkov for general controls, Rego for organisation-specific rules](docs/adr/002-checkov-plus-custom-rego.md)
+
+## What I would change for production
+
+This repo is a demonstration with two fixtures. Before relying on it for a real
+organisation I would:
+
+- **Unit-test each Rego rule** with `conftest verify` / `opa test`, including
+  boundary cases (a port range that stops just below 22, private CIDRs, the
+  standalone rule resource). Today the rules are only exercised end to end
+  through the two fixtures.
+- **Run it against real plans** from every Terraform root module, not just the
+  fixtures, and decide per rule whether a failure blocks the merge or only
+  warns while the team clears the backlog.
+- **Handle values unknown at plan time.** The plan JSON omits attributes that are
+  only known after apply, so rules on those need an explicit policy for
+  "unknown" (see ADR 001).
+- **Add an exception process.** A time-limited, reviewed waiver that records an
+  owner and an expiry, instead of editing the policy.
+- **Cover more services and the Azure provider.** The residency allow-list names
+  Azure regions, but the rule currently reads only the `aws` provider config.
+- **Pin the CI actions by commit SHA** and keep conftest/Terraform versions in
+  one place.
+
 ## Run it locally
 
 ```bash
